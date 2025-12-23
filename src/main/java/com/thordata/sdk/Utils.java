@@ -2,6 +2,8 @@ package com.thordata.sdk;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.net.InetSocketAddress;
+import java.net.URI;
 
 public final class Utils {
   private Utils() {}
@@ -29,5 +31,14 @@ public final class Utils {
       sb.append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
     }
     return sb.toString();
+  }
+
+    public static InetSocketAddress parseHttpProxy(String proxyUrl) {
+    if (proxyUrl == null || proxyUrl.isBlank()) return null;
+    URI u = URI.create(proxyUrl.trim());
+    String host = u.getHost();
+    int port = u.getPort();
+    if (host == null || port <= 0) return null;
+    return new InetSocketAddress(host, port);
   }
 }

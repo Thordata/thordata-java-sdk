@@ -1,2 +1,15 @@
-# Maven build output
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Maven
 target/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+.classpath
+.project
+.settings/

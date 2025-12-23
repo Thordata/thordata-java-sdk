@@ -6,6 +6,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 
 import java.time.Duration;
 import java.util.Base64;
@@ -36,14 +38,32 @@ public final class ThordataClient {
       "vid", "vid"
   );
 
+  private static String normalizeEngine(String engine) {
+  if (engine == null) return "google";
+  String e = engine.trim().toLowerCase();
+
+  return switch (e) {
+    case "google_search" -> "google";
+    case "bing_search" -> "bing";
+    case "yandex_search" -> "yandex";
+    case "duckduckgo_search" -> "duckduckgo";
+    default -> e;
+  };
+  }
+  
   public ThordataClient(ThordataConfig cfg) {
     if (cfg == null || cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
       throw new IllegalArgumentException("scraperToken is required");
     }
     this.cfg = cfg;
-    this.http = HttpClient.newBuilder()
-        .connectTimeout(cfg.timeout == null ? Duration.ofSeconds(30) : cfg.timeout)
-        .build();
+    HttpClient.Builder b = HttpClient.newBuilder()
+        .connectTimeout(cfg.timeout == null ? Duration.ofSeconds(30) : cfg.timeout);
+
+    InetSocketAddress proxy = Utils.parseHttpProxy(cfg.httpProxyUrl);
+    if (proxy != null) {
+      b.proxy(ProxySelector.of(proxy));
+    }
+    this.http = b.build();
 
     String s = cfg.scraperApiBaseUrl.replaceAll("/+$", "");
     String u = cfg.universalApiBaseUrl.replaceAll("/+$", "");
@@ -67,7 +87,7 @@ public final class ThordataClient {
       throw new IllegalArgumentException("query is required");
     }
 
-    String engine = (opt.engine == null || opt.engine.isBlank()) ? "google" : opt.engine.toLowerCase();
+    String engine = (opt.engine == null || opt.engine.isBlank()) ? "google" : normalizeEngine(opt.engine);
     String out = (opt.outputFormat == null || opt.outputFormat.isBlank()) ? "json" : opt.outputFormat.toLowerCase();
 
     Map<String, String> payload = new HashMap<>();

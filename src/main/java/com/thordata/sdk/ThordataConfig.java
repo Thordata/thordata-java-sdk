@@ -10,6 +10,7 @@ public final class ThordataConfig {
   public final Duration timeout;
   public final String userAgent;
 
+  public final String httpProxyUrl;
   public final String scraperApiBaseUrl;
   public final String universalApiBaseUrl;
   public final String webScraperApiBaseUrl;
@@ -24,7 +25,8 @@ public final class ThordataConfig {
       String scraperApiBaseUrl,
       String universalApiBaseUrl,
       String webScraperApiBaseUrl,
-      String locationsBaseUrl
+      String locationsBaseUrl,
+      String httpProxyUrl
   ) {
     this.scraperToken = scraperToken;
     this.publicToken = publicToken;
@@ -36,5 +38,23 @@ public final class ThordataConfig {
     this.universalApiBaseUrl = Utils.getenvOrDefault("THORDATA_UNIVERSALAPI_BASE_URL", universalApiBaseUrl, "https://universalapi.thordata.com");
     this.webScraperApiBaseUrl = Utils.getenvOrDefault("THORDATA_WEB_SCRAPER_API_BASE_URL", webScraperApiBaseUrl, "https://api.thordata.com/api/web-scraper-api");
     this.locationsBaseUrl = Utils.getenvOrDefault("THORDATA_LOCATIONS_BASE_URL", locationsBaseUrl, "https://api.thordata.com/api/locations");
+
+    this.httpProxyUrl = httpProxyUrl;
+  }
+
+  public ThordataConfig(
+      String scraperToken,
+      String publicToken,
+      String publicKey,
+      Duration timeout,
+      String userAgent,
+      String scraperApiBaseUrl,
+      String universalApiBaseUrl,
+      String webScraperApiBaseUrl,
+      String locationsBaseUrl
+  ) {
+    this(scraperToken, publicToken, publicKey, timeout, userAgent,
+        scraperApiBaseUrl, universalApiBaseUrl, webScraperApiBaseUrl, locationsBaseUrl,
+        null);
   }
 }
