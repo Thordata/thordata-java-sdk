@@ -26,6 +26,7 @@ public final class ThordataClient {
   private final String statusUrl;
   private final String downloadUrl;
   private final String locationsBaseUrl;
+  private final String videoBuilderUrl;
 
   private static final Map<String, String> TBM_MAP = Map.of(
       "images", "isch",
@@ -76,6 +77,44 @@ public final class ThordataClient {
     this.statusUrl = w + "/tasks-status";
     this.downloadUrl = w + "/tasks-download";
     this.locationsBaseUrl = l;
+    this.videoBuilderUrl = s + "/video_builder";
+  }
+
+  // --- Public API ---
+
+  public Object getUsageStatistics(String fromDate, String toDate) throws Exception {
+    requirePublicCreds();
+    // usage-statistics endpoint is at /account/usage-statistics relative to api root
+    // locationsBaseUrl is .../api/locations, so we strip /locations
+    String apiBase = cfg.locationsBaseUrl.replace("/locations", "");
+    String url = apiBase + "/account/usage-statistics";
+    
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + 
+                "&from_date=" + fromDate + "&to_date=" + toDate;
+                
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(url + "?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+        
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    // ... error handling similar to listTasks ...
+    return extractData(parsed);
+  }
+
+  // --- API NEW ---
+
+  public Map<String, Object> getResidentialBalance() throws Exception {
+    Object res = executeApiNew("/getFlowBalance", new HashMap<>());
+    return extractData(res);
+  }
+
+  public List<Object> getIspRegions() throws Exception {
+    Object res = executeApiNew("/getRegionIsp", new HashMap<>());
+    return extractData(res);
   }
 
   // --------------------------
@@ -249,14 +288,21 @@ public final class ThordataClient {
       payload.put("spider_universal", om.writeValueAsString(opt.universalParams));
     }
 
-    HttpRequest req = HttpRequest.newBuilder()
+    HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
         .uri(URI.create(builderUrl))
         .timeout(cfg.timeout)
         .header("Authorization", "Bearer " + cfg.scraperToken)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", cfg.userAgent)
-        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
-        .build();
+        .header("User-Agent", cfg.userAgent);
+
+    if (cfg.publicToken != null && !cfg.publicToken.isBlank()) {
+        reqBuilder.header("token", cfg.publicToken);
+    }
+    if (cfg.publicKey != null && !cfg.publicKey.isBlank()) {
+        reqBuilder.header("key", cfg.publicKey);
+    }
+
+    HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload))).build();
 
     HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
@@ -345,6 +391,85 @@ public final class ThordataClient {
     }
 
     throw new ThordataErrors.ThordataApiException("Invalid response from download API", null, res.statusCode(), parsed);
+  }
+
+  public String createVideoTask(VideoTaskOptions opt) throws Exception {
+    if (opt == null || opt.fileName == null || opt.spiderId == null || opt.spiderName == null) {
+      throw new IllegalArgumentException("fileName, spiderId, spiderName are required");
+    }
+    if (opt.parameters == null) {
+      throw new IllegalArgumentException("parameters is required");
+    }
+
+    Map<String, String> payload = new HashMap<>();
+    payload.put("file_name", opt.fileName);
+    payload.put("spider_id", opt.spiderId);
+    payload.put("spider_name", opt.spiderName);
+    payload.put("spider_parameters", om.writeValueAsString(List.of(opt.parameters)));
+    payload.put("spider_errors", opt.includeErrors ? "true" : "false");
+
+    if (opt.commonSettings != null) {
+      // Common settings are serialized as a JSON string
+      payload.put("common_settings", om.writeValueAsString(opt.commonSettings));
+    }
+
+    HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
+        .uri(URI.create(videoBuilderUrl))
+        .timeout(cfg.timeout)
+        .header("Authorization", "Bearer " + cfg.scraperToken)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent);
+
+    if (cfg.publicToken != null) reqBuilder.header("token", cfg.publicToken);
+    if (cfg.publicKey != null) reqBuilder.header("key", cfg.publicKey);
+
+    HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload))).build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+
+    if (!(parsed instanceof Map<?, ?> m)) {
+      throw new ThordataErrors.ThordataApiException("Invalid response", null, res.statusCode(), parsed);
+    }
+    Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+    if (apiCode != null && apiCode != 200) {
+      throw raiseForCode("Video task creation failed", m, res.statusCode());
+    }
+
+    Object dataObj = m.get("data");
+    if (dataObj instanceof Map<?, ?> dm && dm.containsKey("task_id")) {
+      return String.valueOf(dm.get("task_id"));
+    }
+    throw new ThordataErrors.ThordataApiException("task_id missing", apiCode, res.statusCode(), parsed);
+  }
+
+  public Map<String, Object> listTasks(int page, int size) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("page", String.valueOf(page));
+    payload.put("size", String.valueOf(size));
+
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(cfg.webScraperApiBaseUrl + "/tasks-list"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("List tasks failed", m, res.statusCode());
+        }
+        return (Map<String, Object>) m.get("data");
+    }
+    return new HashMap<>();
   }
 
   // --------------------------
@@ -493,5 +618,47 @@ public final class ThordataClient {
     if (mod == 2) v = v + "==";
     if (mod == 3) v = v + "=";
     return Base64.getDecoder().decode(v);
+  }
+
+    private void requireSignApiKey() {
+    if (cfg.sign == null || cfg.sign.isBlank() || cfg.apiKey == null || cfg.apiKey.isBlank()) {
+      throw new IllegalArgumentException("sign and apiKey are required for Public API NEW");
+    }
+  }
+
+  private Object executeApiNew(String endpoint, Map<String, String> payload) throws Exception {
+    requireSignApiKey();
+    String body = payload == null ? "" : Utils.formEncode(payload);
+    
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(cfg.gatewayBaseUrl + endpoint))
+        .timeout(cfg.timeout)
+        .header("sign", cfg.sign)
+        .header("apiKey", cfg.apiKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(body))
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+
+    if (parsed instanceof Map<?, ?> m) {
+      Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+      if (apiCode != null && apiCode != 200) {
+        throw raiseForCode("API NEW error", m, res.statusCode());
+      }
+      return m; // Return full response or data? Usually full response for consistency
+    }
+    return parsed;
+  }
+  
+  // Helper to extract data from response
+  @SuppressWarnings("unchecked")
+  private <T> T extractData(Object response) {
+      if (response instanceof Map<?, ?> m) {
+          return (T) m.get("data");
+      }
+      return null;
   }
 }
