@@ -2,32 +2,80 @@
 
 Official Java SDK for Thordata APIs.
 
-## Development
+## Installation
 
-This repository includes a git submodule (`sdk-spec`) for cross-SDK parity checks.
+Add to `pom.xml`:
 
-```bash
-git submodule update --init --recursive
-mvn -B test
+```xml
+<dependency>
+  <groupId>com.thordata</groupId>
+  <artifactId>thordata-java-sdk</artifactId>
+  <version>0.1.0</version>
+</dependency>
 ```
 
-## Examples
+## Quick Start
 
-1) Copy `.env.example` to `.env` and fill in your credentials.
-2) Run examples from the repository root.
+```java
+import com.thordata.sdk.ThordataClient;
+import com.thordata.sdk.ThordataConfig;
+import com.thordata.sdk.SerpOptions;
 
-Java:
+public class Main {
+    public static void main(String[] args) throws Exception {
+        ThordataConfig cfg = new ThordataConfig(
+            System.getenv("THORDATA_SCRAPER_TOKEN"),
+            System.getenv("THORDATA_PUBLIC_TOKEN"),
+            System.getenv("THORDATA_PUBLIC_KEY")
+        );
+        ThordataClient client = new ThordataClient(cfg);
 
-```bash
-mvn -q -DskipTests test-compile exec:java -Dexec.classpathScope=test -Dexec.mainClass=com.thordata.sdk.examples.SerpExample
+        SerpOptions opt = new SerpOptions();
+        opt.query = "java sdk";
+        opt.engine = "google";
+        
+        Object result = client.serpSearch(opt);
+        System.out.println(result);
+    }
+}
 ```
 
-## Git submodules
+## Features
 
-This repository uses a git submodule (`sdk-spec`) for cross-SDK parity checks.
+### Web Scraper API
 
-After cloning:
+```java
+// Create Video Task
+VideoTaskOptions taskOpt = new VideoTaskOptions();
+taskOpt.fileName = "video";
+taskOpt.spiderId = "youtube_video_by-url";
+taskOpt.spiderName = "youtube.com";
+taskOpt.parameters.put("url", "...");
+taskOpt.commonSettings = new CommonSettings();
+taskOpt.commonSettings.resolution = "1080p";
 
-```bash
-git submodule update --init --recursive
+String taskId = client.createVideoTask(taskOpt);
+
+// Get Result
+String url = client.getTaskResult(taskId, "json");
+```
+
+### Account Management
+
+```java
+// Usage
+Object stats = client.getUsageStatistics("2024-01-01", "2024-01-31");
+
+// Proxy Users
+Object users = client.listProxyUsers(1); // 1=Residential
+
+// Whitelist
+client.addWhitelistIp("1.2.3.4", 1);
+```
+
+### Public API NEW
+
+```java
+Map<String, Object> balance = client.getResidentialBalance();
+List<Object> ispRegions = client.getIspRegions();
 ```
