@@ -12,6 +12,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
@@ -20,6 +22,6 @@ jobs:
           settings-path: ${{ github.workspace }}
 
       - name: Publish to GitHub Packages
-        run: mvn deploy -s $GITHUB_WORKSPACE/settings.xml
+        run: mvn deploy -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/Thordata/thordata-java-sdk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
