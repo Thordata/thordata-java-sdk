@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thordata.sdk.ScraperTaskOptions;
 import com.thordata.sdk.ThordataClient;
 import com.thordata.sdk.ThordataConfig;
-import com.thordata.sdk.examples.Env;
+
 
 import java.time.Duration;
 import java.util.Map;

@@ -72,10 +72,3 @@ Object users = client.listProxyUsers(1); // 1=Residential
 // Whitelist
 client.addWhitelistIp("1.2.3.4", 1);
 ```
-
-### Public API NEW
-
-```java
-Map<String, Object> balance = client.getResidentialBalance();
-List<Object> ispRegions = client.getIspRegions();
-```

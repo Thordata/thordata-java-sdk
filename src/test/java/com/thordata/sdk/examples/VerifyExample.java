@@ -7,8 +7,6 @@ import com.thordata.sdk.ThordataConfig;
 import com.thordata.sdk.VideoTaskOptions;
 
 import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
 
 public class VerifyExample {
   public static void main(String[] args) throws Exception {
@@ -23,12 +21,10 @@ public class VerifyExample {
 
     ThordataConfig cfg = new ThordataConfig(
         token, pub, key,
-        null, null, // sign/apiKey auto-fallback
         Duration.ofSeconds(60), null,
         null, null, null, null, null
     );
     ThordataClient client = new ThordataClient(cfg);
-    ObjectMapper om = new ObjectMapper();
 
     System.out.println("=== Verifying Features ===");
 
@@ -50,13 +46,5 @@ public class VerifyExample {
       System.out.println("❌ Failed: " + e.getMessage());
     }
 
-    // 2. API NEW Balance
-    System.out.println("\n--- API NEW Balance ---");
-    try {
-      Map<String, Object> bal = client.getResidentialBalance();
-      System.out.println("✅ Balance: " + bal);
-    } catch (Exception e) {
-      System.out.println("❌ Failed: " + e.getMessage());
-    }
   }
 }

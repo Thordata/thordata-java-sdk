@@ -3,7 +3,6 @@ package com.thordata.sdk.examples;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thordata.sdk.ThordataClient;
 import com.thordata.sdk.ThordataConfig;
-import com.thordata.sdk.examples.Env;
 
 import java.time.Duration;
 

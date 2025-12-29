@@ -45,4 +45,21 @@ public class SpecParityTest {
 
     assertEquals("nws", tbm.get("news"));
   }
+  @Test
+  public void specShouldNotContainPublicApiNewOrSignApiKey() throws Exception {
+    Path p = Path.of(System.getenv().getOrDefault("THORDATA_SDK_SPEC_PATH", "sdk-spec/v1.json"));
+    if (!Files.exists(p)) return;
+
+    ObjectMapper om = new ObjectMapper();
+    Map<?, ?> spec = om.readValue(Files.readString(p), Map.class);
+
+    assertFalse(spec.containsKey("publicApiNew"));
+
+    Map<?, ?> auth = (Map<?, ?>) spec.get("auth");
+    if (auth != null && auth.containsKey("credentials")) {
+      Map<?, ?> creds = (Map<?, ?>) auth.get("credentials");
+      assertFalse(creds.containsKey("sign"));
+      assertFalse(creds.containsKey("apiKey"));
+    }
+  }
 }

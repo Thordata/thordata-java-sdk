@@ -101,20 +101,16 @@ public final class ThordataClient {
         
     HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
-    // ... error handling similar to listTasks ...
-    return extractData(parsed);
-  }
-
-  // --- API NEW ---
-
-  public Map<String, Object> getResidentialBalance() throws Exception {
-    Object res = executeApiNew("/getFlowBalance", new HashMap<>());
-    return extractData(res);
-  }
-
-  public List<Object> getIspRegions() throws Exception {
-    Object res = executeApiNew("/getRegionIsp", new HashMap<>());
-    return extractData(res);
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Usage statistics failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) {
+            return m.get("data");
+        }
+    }
+    return parsed;
   }
 
   // --------------------------
@@ -157,6 +153,7 @@ public final class ThordataClient {
     HttpRequest req = HttpRequest.newBuilder()
         .uri(URI.create(serpUrl))
         .timeout(cfg.timeout)
+        .header("token", cfg.scraperToken)
         .header("Authorization", "Bearer " + cfg.scraperToken)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("User-Agent", cfg.userAgent)
@@ -224,6 +221,7 @@ public final class ThordataClient {
     HttpRequest req = HttpRequest.newBuilder()
         .uri(URI.create(universalUrl))
         .timeout(cfg.timeout)
+        .header("token", cfg.scraperToken)
         .header("Authorization", "Bearer " + cfg.scraperToken)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("User-Agent", cfg.userAgent)
@@ -620,45 +618,7 @@ public final class ThordataClient {
     return Base64.getDecoder().decode(v);
   }
 
-    private void requireSignApiKey() {
-    if (cfg.sign == null || cfg.sign.isBlank() || cfg.apiKey == null || cfg.apiKey.isBlank()) {
-      throw new IllegalArgumentException("sign and apiKey are required for Public API NEW");
-    }
-  }
-
-  private Object executeApiNew(String endpoint, Map<String, String> payload) throws Exception {
-    requireSignApiKey();
-    String body = payload == null ? "" : Utils.formEncode(payload);
-    
-    HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(cfg.gatewayBaseUrl + endpoint))
-        .timeout(cfg.timeout)
-        .header("sign", cfg.sign)
-        .header("apiKey", cfg.apiKey)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", cfg.userAgent)
-        .POST(HttpRequest.BodyPublishers.ofString(body))
-        .build();
-
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-    Object parsed = safeParseJson(res.body());
-
-    if (parsed instanceof Map<?, ?> m) {
-      Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
-      if (apiCode != null && apiCode != 200) {
-        throw raiseForCode("API NEW error", m, res.statusCode());
-      }
-      return m; // Return full response or data? Usually full response for consistency
-    }
-    return parsed;
-  }
-  
-  // Helper to extract data from response
-  @SuppressWarnings("unchecked")
-  private <T> T extractData(Object response) {
-      if (response instanceof Map<?, ?> m) {
-          return (T) m.get("data");
-      }
-      return null;
+  public ProxyResponse proxyGet(String url, ProxyConfig proxy) throws Exception {
+    return ProxyNetwork.proxyGet(url, proxy, cfg.userAgent, cfg.timeout);
   }
 }

@@ -3,7 +3,7 @@ package com.thordata.sdk.examples;
 import com.thordata.sdk.ThordataClient;
 import com.thordata.sdk.ThordataConfig;
 import com.thordata.sdk.UniversalOptions;
-import com.thordata.sdk.examples.Env;
+
 
 import java.time.Duration;
 
