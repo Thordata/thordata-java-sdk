@@ -7,7 +7,7 @@
 
   <groupId>com.thordata</groupId>
   <artifactId>thordata-java-sdk</artifactId>
-  <version>0.1.0</version>
+  <version>1.0.0</version>
   <name>thordata-java-sdk</name>
 
   <properties>
