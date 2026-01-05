@@ -36,7 +36,7 @@ public final class ThordataConfig {
 
     this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
     this.userAgent = (userAgent == null || userAgent.isBlank())
-        ? Utils.buildUserAgent("0.1.0")
+        ? Utils.buildUserAgent("1.0.1")
         : userAgent;
 
     this.scraperApiBaseUrl = Utils.getenvOrDefault(
