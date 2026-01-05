@@ -1,3 +1,4 @@
+// src/main/java/com/thordata/sdk/Utils.java
 package com.thordata.sdk;
 
 import java.net.URLEncoder;
@@ -9,7 +10,12 @@ public final class Utils {
   private Utils() {}
 
   public static String buildUserAgent(String version) {
-    return "thordata-java-sdk/" + version + " (java " + System.getProperty("java.version") + "; " + System.getProperty("os.name") + ")";
+    String javaVer = System.getProperty("java.version");
+    String osName = System.getProperty("os.name");
+    String osArch = System.getProperty("os.arch");
+    // Format: thordata-java-sdk/{version} java/{java_ver} ({os_name}/{os_arch})
+    return String.format("thordata-java-sdk/%s java/%s (%s/%s)", 
+        version, javaVer, osName, osArch);
   }
 
   public static String getenvOrDefault(String envKey, String provided, String def) {
