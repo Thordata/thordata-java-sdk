@@ -465,7 +465,9 @@ public final class ThordataClient {
         if (apiCode != null && apiCode != 200) {
             throw raiseForCode("List tasks failed", m, res.statusCode());
         }
-        return (Map<String, Object>) m.get("data");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) m.get("data");
+        return data;
     }
     return new HashMap<>();
   }
