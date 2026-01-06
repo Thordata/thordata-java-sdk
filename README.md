@@ -21,7 +21,7 @@ Add to `pom.xml`:
 <dependency>
   <groupId>com.thordata</groupId>
   <artifactId>thordata-java-sdk</artifactId>
-  <version>1.0.1</version>
+  <version>1.1.0</version>
 </dependency>
 ```
 
