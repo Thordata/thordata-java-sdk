@@ -28,6 +28,13 @@ public final class ThordataClient {
   private final String locationsBaseUrl;
   private final String videoBuilderUrl;
 
+  private final String usageStatsUrl;
+  private final String proxyUsersUrl;
+  private final String whitelistUrl;
+  private final String proxyListUrl;
+  private final String proxyExpirationUrl;
+  private final String taskListUrl;
+
   private static final Map<String, String> TBM_MAP = Map.of(
       "images", "isch",
       "shopping", "shop",
@@ -40,18 +47,18 @@ public final class ThordataClient {
   );
 
   private static String normalizeEngine(String engine) {
-  if (engine == null) return "google";
-  String e = engine.trim().toLowerCase();
+    if (engine == null) return "google";
+    String e = engine.trim().toLowerCase();
 
-  return switch (e) {
-    case "google_search" -> "google";
-    case "bing_search" -> "bing";
-    case "yandex_search" -> "yandex";
-    case "duckduckgo_search" -> "duckduckgo";
-    default -> e;
-  };
+    return switch (e) {
+      case "google_search" -> "google";
+      case "bing_search" -> "bing";
+      case "yandex_search" -> "yandex";
+      case "duckduckgo_search" -> "duckduckgo";
+      default -> e;
+    };
   }
-  
+
   public ThordataClient(ThordataConfig cfg) {
     if (cfg == null || cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
       throw new IllegalArgumentException("scraperToken is required");
@@ -60,16 +67,18 @@ public final class ThordataClient {
     HttpClient.Builder b = HttpClient.newBuilder()
         .connectTimeout(cfg.timeout == null ? Duration.ofSeconds(30) : cfg.timeout);
 
-    InetSocketAddress proxy = Utils.parseHttpProxy(cfg.httpProxyUrl);
-    if (proxy != null) {
-      b.proxy(ProxySelector.of(proxy));
+    if (cfg.httpProxyUrl != null && !cfg.httpProxyUrl.isBlank()) {
+        InetSocketAddress proxy = Utils.parseHttpProxy(cfg.httpProxyUrl);
+        if (proxy != null) {
+            b.proxy(ProxySelector.of(proxy));
+        }
     }
     this.http = b.build();
 
-    String s = cfg.scraperApiBaseUrl.replaceAll("/+$", "");
-    String u = cfg.universalApiBaseUrl.replaceAll("/+$", "");
-    String w = cfg.webScraperApiBaseUrl.replaceAll("/+$", "");
-    String l = cfg.locationsBaseUrl.replaceAll("/+$", "");
+    String s = normalizeUrl(cfg.scraperApiBaseUrl);
+    String u = normalizeUrl(cfg.universalApiBaseUrl);
+    String w = normalizeUrl(cfg.webScraperApiBaseUrl);
+    String l = normalizeUrl(cfg.locationsBaseUrl);
 
     this.serpUrl = s + "/request";
     this.builderUrl = s + "/builder";
@@ -78,22 +87,33 @@ public final class ThordataClient {
     this.downloadUrl = w + "/tasks-download";
     this.locationsBaseUrl = l;
     this.videoBuilderUrl = s + "/video_builder";
+
+    // Public API URLs
+    String apiBase = l.replace("/locations", "");
+    this.usageStatsUrl = apiBase + "/account/usage-statistics";
+    this.proxyUsersUrl = apiBase + "/proxy-users";
+    this.whitelistUrl = "https://api.thordata.com/api/whitelisted-ips";
+    this.proxyListUrl = "https://openapi.thordata.com/api/proxy/proxy-list";
+    this.proxyExpirationUrl = apiBase + "/proxy/expiration-time";
+    this.taskListUrl = w + "/tasks-list";
   }
 
-  // --- Public API ---
+  private String normalizeUrl(String url) {
+      if (url == null) return "";
+      return url.replaceAll("/+$", "");
+  }
+
+  // --------------------------
+  // Public API Methods
+  // --------------------------
 
   public Object getUsageStatistics(String fromDate, String toDate) throws Exception {
     requirePublicCreds();
-    // usage-statistics endpoint is at /account/usage-statistics relative to api root
-    // locationsBaseUrl is .../api/locations, so we strip /locations
-    String apiBase = cfg.locationsBaseUrl.replace("/locations", "");
-    String url = apiBase + "/account/usage-statistics";
-    
     String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + 
                 "&from_date=" + fromDate + "&to_date=" + toDate;
                 
     HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(url + "?" + qs))
+        .uri(URI.create(usageStatsUrl + "?" + qs))
         .timeout(cfg.timeout)
         .header("User-Agent", cfg.userAgent)
         .GET()
@@ -114,20 +134,20 @@ public final class ThordataClient {
   }
 
   // --------------------------
-  // 1) SERP API
+  // 1) SERP API (Strongly Typed)
   // --------------------------
 
-  public Object serpSearch(SerpOptions opt) throws Exception {
+  public SerpResponse serpSearch(SerpOptions opt) throws Exception {
     if (opt == null || opt.query == null || opt.query.isBlank()) {
       throw new IllegalArgumentException("query is required");
     }
 
     String engine = (opt.engine == null || opt.engine.isBlank()) ? "google" : normalizeEngine(opt.engine);
-    String out = (opt.outputFormat == null || opt.outputFormat.isBlank()) ? "json" : opt.outputFormat.toLowerCase();
-
+    // Note: We force json=1 to ensure we can parse into SerpResponse
+    
     Map<String, String> payload = new HashMap<>();
     payload.put("engine", engine);
-    payload.put("json", out.equals("html") ? "0" : "1");
+    payload.put("json", "1");
 
     if (engine.equals("yandex")) payload.put("text", opt.query);
     else payload.put("q", opt.query);
@@ -162,28 +182,28 @@ public final class ThordataClient {
 
     HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
 
-    if (out.equals("html")) {
-      Map<String, Object> html = new HashMap<>();
-      html.put("html", res.body());
-      return html;
+    // Deserialize into SerpResponse
+    try {
+        SerpResponse response = om.readValue(res.body(), SerpResponse.class);
+        
+        // Check for API-level errors
+        if (response.code != 0 && response.code != 200) {
+            // Re-wrap error into exception for consistency, using payload from object
+            // For simplicity, we create a map to pass to raiseForCode or throw directly
+            // Since raiseForCode takes Map, we might need to convert back, but simpler is:
+            throw new ThordataErrors.ThordataApiException(
+                "SERP API Error: " + (response.status != null ? response.status : "Unknown"), 
+                response.code, res.statusCode(), response
+            );
+        }
+        return response;
+    } catch (Exception e) {
+        // Fallback for parsing errors (e.g. 500 HTML response)
+        if (res.statusCode() >= 400) {
+             throw new ThordataErrors.ThordataApiException("Request failed: " + res.body(), 0, res.statusCode(), res.body());
+        }
+        throw e;
     }
-
-    Object parsed = safeParseJson(res.body());
-    if (parsed instanceof Map<?, ?> m && m.containsKey("code")) {
-      Integer apiCode = toInt(m.get("code"));
-      if (apiCode != null && apiCode != 200) {
-        throw raiseForCode("SERP API error", m, res.statusCode());
-      }
-    }
-
-    if (res.statusCode() < 200 || res.statusCode() >= 300) {
-      if (parsed instanceof Map<?, ?> m) {
-        throw raiseForCode("SERP HTTP error", m, res.statusCode());
-      }
-      throw new ThordataErrors.ThordataApiException("SERP request failed", null, res.statusCode(), parsed);
-    }
-
-    return parsed;
   }
 
   // --------------------------
@@ -232,7 +252,6 @@ public final class ThordataClient {
       HttpResponse<byte[]> res = http.send(req, HttpResponse.BodyHandlers.ofByteArray());
       byte[] raw = res.body();
 
-      // Try JSON first (some backends may return base64 png in JSON)
       Object parsed = safeParseJsonBytes(raw);
       if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -259,8 +278,7 @@ public final class ThordataClient {
         return String.valueOf(m.get("html"));
       }
     }
-
-    return parsed instanceof String ? parsed : om.writeValueAsString(parsed);
+    return parsed;
   }
 
   // --------------------------
@@ -293,12 +311,8 @@ public final class ThordataClient {
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("User-Agent", cfg.userAgent);
 
-    if (cfg.publicToken != null && !cfg.publicToken.isBlank()) {
-        reqBuilder.header("token", cfg.publicToken);
-    }
-    if (cfg.publicKey != null && !cfg.publicKey.isBlank()) {
-        reqBuilder.header("key", cfg.publicKey);
-    }
+    if (cfg.publicToken != null) reqBuilder.header("token", cfg.publicToken);
+    if (cfg.publicKey != null) reqBuilder.header("key", cfg.publicKey);
 
     HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload))).build();
 
@@ -407,7 +421,6 @@ public final class ThordataClient {
     payload.put("spider_errors", opt.includeErrors ? "true" : "false");
 
     if (opt.commonSettings != null) {
-      // Common settings are serialized as a JSON string
       payload.put("common_settings", om.writeValueAsString(opt.commonSettings));
     }
 
@@ -448,7 +461,7 @@ public final class ThordataClient {
     payload.put("size", String.valueOf(size));
 
     HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(cfg.webScraperApiBaseUrl + "/tasks-list"))
+        .uri(URI.create(taskListUrl))
         .timeout(cfg.timeout)
         .header("token", cfg.publicToken)
         .header("key", cfg.publicKey)
@@ -470,6 +483,134 @@ public final class ThordataClient {
         return data;
     }
     return new HashMap<>();
+  }
+
+  public Object listProxyUsers(int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + "&proxy_type=" + proxyType;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyUsersUrl + "/user-list?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("List proxy users failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+    }
+    return parsed;
+  }
+
+  public Object createProxyUser(String username, String password, int trafficLimit, boolean status, int proxyType) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("username", username);
+    payload.put("password", password);
+    payload.put("traffic_limit", String.valueOf(trafficLimit));
+    payload.put("status", status ? "true" : "false");
+    payload.put("proxy_type", String.valueOf(proxyType));
+
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyUsersUrl + "/create-user"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Create proxy user failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+    }
+    return parsed;
+  }
+
+  public Object addWhitelistIp(String ip, int proxyType, boolean status) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("ip", ip);
+    payload.put("proxy_type", String.valueOf(proxyType));
+    payload.put("status", status ? "true" : "false");
+
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(whitelistUrl + "/add-ip"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Add whitelist IP failed", m, res.statusCode());
+        }
+        return m.get("data");
+    }
+    return parsed;
+  }
+
+  public Object listProxyServers(int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + "&proxy_type=" + proxyType;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyListUrl + "?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("List proxy servers failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+        if (m.containsKey("list")) return m.get("list");
+    }
+    return parsed;
+  }
+
+  public Object getProxyExpiration(String ips, int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + 
+                "&proxy_type=" + proxyType + "&ips=" + ips;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyExpirationUrl + "?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Get proxy expiration failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+    }
+    return parsed;
   }
 
   // --------------------------
@@ -586,7 +727,6 @@ public final class ThordataClient {
     return null;
   }
 
-  // Precedence: payload code (when != 200) > HTTP status (when != 200)
   private RuntimeException raiseForCode(String message, Map<?, ?> payload, int httpStatus) {
     Integer apiCode = payload.containsKey("code") ? toInt(payload.get("code")) : null;
 

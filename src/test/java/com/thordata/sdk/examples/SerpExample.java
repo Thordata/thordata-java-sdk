@@ -2,9 +2,9 @@ package com.thordata.sdk.examples;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thordata.sdk.SerpOptions;
+import com.thordata.sdk.SerpResponse;
 import com.thordata.sdk.ThordataClient;
 import com.thordata.sdk.ThordataConfig;
-
 
 import java.time.Duration;
 
@@ -19,15 +19,15 @@ public final class SerpExample {
     String proxy = Env.get("HTTPS_PROXY");
     if (proxy == null || proxy.isBlank()) proxy = Env.get("HTTP_PROXY");
 
-    ThordataClient client = new ThordataClient(new ThordataConfig(
-        token,
-        Env.get("THORDATA_PUBLIC_TOKEN"),
-        Env.get("THORDATA_PUBLIC_KEY"),
-        Duration.ofSeconds(60),
-        null,
-        null, null, null, 
-        proxy
-    ));
+    // Use Builder Pattern
+    ThordataConfig config = ThordataConfig.builder(token)
+        .publicToken(Env.get("THORDATA_PUBLIC_TOKEN"))
+        .publicKey(Env.get("THORDATA_PUBLIC_KEY"))
+        .timeout(Duration.ofSeconds(60))
+        .httpProxy(proxy)
+        .build();
+
+    ThordataClient client = new ThordataClient(config);
 
     SerpOptions opt = new SerpOptions();
     opt.query = "pizza";
@@ -36,15 +36,12 @@ public final class SerpExample {
     opt.outputFormat = "json";
 
     try {
-    Object out = client.serpSearch(opt);
-    System.out.println(new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(out));
-  } catch (com.thordata.sdk.ThordataErrors.ThordataApiException e) {
-    System.err.println("API error:");
-    System.err.println("  message: " + e.getMessage());
-    System.err.println("  httpStatus: " + e.httpStatus);
-    System.err.println("  apiCode: " + e.apiCode);
-    System.err.println("  payload: " + String.valueOf(e.payload));
-    throw e;
-  }
+        // Now returns SerpResponse
+        SerpResponse out = client.serpSearch(opt);
+        System.out.println(new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(out));
+    } catch (Exception e) {
+        System.err.println("API error: " + e.getMessage());
+        e.printStackTrace();
+    }
   }
 }
