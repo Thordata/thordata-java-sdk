@@ -2,24 +2,33 @@ package com.thordata.sdk;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
+import java.net.Socket;
 import java.net.URI;
+import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.InetSocketAddress;
-import java.net.ProxySelector;
-
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 public final class ThordataClient {
   private final ThordataConfig cfg;
-  private final HttpClient http;
+  private final HttpClient apiClient; 
   private final ObjectMapper om = new ObjectMapper();
 
+  // API Endpoints
   private final String serpUrl;
   private final String universalUrl;
   private final String builderUrl;
@@ -27,7 +36,6 @@ public final class ThordataClient {
   private final String downloadUrl;
   private final String locationsBaseUrl;
   private final String videoBuilderUrl;
-
   private final String usageStatsUrl;
   private final String proxyUsersUrl;
   private final String whitelistUrl;
@@ -49,7 +57,6 @@ public final class ThordataClient {
   private static String normalizeEngine(String engine) {
     if (engine == null) return "google";
     String e = engine.trim().toLowerCase();
-
     return switch (e) {
       case "google_search" -> "google";
       case "bing_search" -> "bing";
@@ -60,12 +67,16 @@ public final class ThordataClient {
   }
 
   public ThordataClient(ThordataConfig cfg) {
-    if (cfg == null || cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
-      throw new IllegalArgumentException("scraperToken is required");
+    if (cfg == null) {
+      throw new IllegalArgumentException("Config cannot be null");
     }
+    // [REMOVED]: Check for scraperToken removed from here
     this.cfg = cfg;
+    
+    // Initialize API Client (for SERP/Universal/Tasks)
     HttpClient.Builder b = HttpClient.newBuilder()
-        .connectTimeout(cfg.timeout == null ? Duration.ofSeconds(30) : cfg.timeout);
+        .connectTimeout(cfg.timeout == null ? Duration.ofSeconds(30) : cfg.timeout)
+        .followRedirects(HttpClient.Redirect.NORMAL);
 
     if (cfg.httpProxyUrl != null && !cfg.httpProxyUrl.isBlank()) {
         InetSocketAddress proxy = Utils.parseHttpProxy(cfg.httpProxyUrl);
@@ -73,8 +84,9 @@ public final class ThordataClient {
             b.proxy(ProxySelector.of(proxy));
         }
     }
-    this.http = b.build();
+    this.apiClient = b.build();
 
+    // Setup URLs
     String s = normalizeUrl(cfg.scraperApiBaseUrl);
     String u = normalizeUrl(cfg.universalApiBaseUrl);
     String w = normalizeUrl(cfg.webScraperApiBaseUrl);
@@ -88,7 +100,6 @@ public final class ThordataClient {
     this.locationsBaseUrl = l;
     this.videoBuilderUrl = s + "/video_builder";
 
-    // Public API URLs
     String apiBase = l.replace("/locations", "");
     this.usageStatsUrl = apiBase + "/account/usage-statistics";
     this.proxyUsersUrl = apiBase + "/proxy-users";
@@ -101,6 +112,230 @@ public final class ThordataClient {
   private String normalizeUrl(String url) {
       if (url == null) return "";
       return url.replaceAll("/+$", "");
+  }
+
+  // --------------------------
+  // Proxy Network (Manual Socket Implementation with TLS-in-TLS)
+  // --------------------------
+
+public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Exception {
+    if (proxy == null) {
+      proxy = ProxyConfig.residentialFromEnv();
+    }
+
+    URL url = URI.create(targetUrl).toURL();
+    String targetHost = url.getHost();
+    int targetPort = url.getPort() == -1 ? (url.getProtocol().equalsIgnoreCase("https") ? 443 : 80) : url.getPort();
+    boolean isTargetHttps = url.getProtocol().equalsIgnoreCase("https");
+
+    String proxyHost = proxy.effectiveHost();
+    int proxyPort = proxy.effectivePort();
+    String proxyProto = proxy.effectiveProtocol();
+    String proxyUser = proxy.noAuth ? null : proxy.buildGatewayUsername();
+    String proxyPass = proxy.noAuth ? null : proxy.password;
+
+    // 1. Connect TCP to Proxy
+    Socket socket = new Socket();
+    socket.setSoTimeout((int) cfg.timeout.toMillis());
+    socket.connect(new InetSocketAddress(proxyHost, proxyPort), (int) cfg.timeout.toMillis());
+
+    try {
+        // 2. If Proxy Protocol is HTTPS, Handshake with Proxy FIRST (Outer TLS)
+        if ("https".equalsIgnoreCase(proxyProto)) {
+            SSLSocketFactory proxySslFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            // autoClose=true is fine here as this becomes the base socket
+            SSLSocket proxySslSocket = (SSLSocket) proxySslFactory.createSocket(socket, proxyHost, proxyPort, true);
+            proxySslSocket.startHandshake();
+            socket = proxySslSocket;
+        }
+
+        // 3. Send HTTP CONNECT (Tunneling Request)
+        String connectRequest = "CONNECT " + targetHost + ":" + targetPort + " HTTP/1.1\r\n" +
+                                "Host: " + targetHost + ":" + targetPort + "\r\n" +
+                                "User-Agent: " + cfg.userAgent + "\r\n";
+        
+        if (proxyUser != null && !proxyUser.isEmpty()) {
+            String creds = proxyUser + ":" + proxyPass;
+            String encoded = Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
+            connectRequest += "Proxy-Authorization: Basic " + encoded + "\r\n";
+        }
+        connectRequest += "\r\n";
+
+        OutputStream out = socket.getOutputStream();
+        out.write(connectRequest.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+
+        // 4. Read Proxy Response (Byte-by-byte to avoid buffering over-read)
+        InputStream in = socket.getInputStream();
+        ByteArrayOutputStream headerBuffer = new ByteArrayOutputStream();
+        int c;
+        // Looking for \r\n\r\n (13 10 13 10)
+        int[] tail = new int[4];
+        int count = 0;
+        
+        while ((c = in.read()) != -1) {
+            headerBuffer.write(c);
+            tail[count % 4] = c;
+            count++;
+            
+            if (count >= 4) {
+                if (tail[(count-4)%4] == 13 && tail[(count-3)%4] == 10 && 
+                    tail[(count-2)%4] == 13 && tail[(count-1)%4] == 10) {
+                    break; // Headers done
+                }
+            }
+        }
+
+        String responseHeader = headerBuffer.toString(StandardCharsets.US_ASCII);
+        if (!responseHeader.contains(" 200 ")) {
+            throw new Exception("Proxy handshake failed: " + responseHeader.split("\r\n")[0]);
+        }
+
+        // 5. Upgrade to Inner TLS if target is HTTPS (TLS-in-TLS)
+        if (isTargetHttps) {
+            SSLSocketFactory targetSslFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            // Use createSocket(Socket s, String host, int port, boolean autoClose)
+            // autoClose=true means closing the new socket closes the underlying one, which is what we want.
+            SSLSocket targetSslSocket = (SSLSocket) targetSslFactory.createSocket(socket, targetHost, targetPort, true);
+            
+            targetSslSocket.setUseClientMode(true);
+            targetSslSocket.startHandshake();
+            
+            socket = targetSslSocket;
+            out = socket.getOutputStream();
+            in = socket.getInputStream();
+        }
+
+        // 6. Send Actual GET Request
+        String path = url.getPath().isEmpty() ? "/" : url.getPath();
+        if (url.getQuery() != null) path += "?" + url.getQuery();
+
+        String getRequest = "GET " + path + " HTTP/1.1\r\n" +
+                            "Host: " + targetHost + "\r\n" +
+                            "User-Agent: " + cfg.userAgent + "\r\n" +
+                            "Connection: close\r\n\r\n";
+        
+        out.write(getRequest.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+
+        // 7. Parse Response
+        return parseResponse(in);
+
+    } finally {
+        try { socket.close(); } catch (Exception ignored) {}
+    }
+  }
+
+  private ProxyResponse parseResponse(InputStream in) throws Exception {
+    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    int c;
+    boolean headerDone = false;
+    
+    // Naive header parser: look for \r\n\r\n
+    // We read byte by byte to preserve the body stream start position
+    int[] ring = new int[4]; 
+    int i = 0;
+    
+    while ((c = in.read()) != -1) {
+        buffer.write(c);
+        ring[i % 4] = c;
+        i++;
+        if (i >= 4) {
+            // Check for \r\n\r\n (13 10 13 10)
+            if (ring[(i-4)%4] == 13 && ring[(i-3)%4] == 10 && 
+                ring[(i-2)%4] == 13 && ring[(i-1)%4] == 10) {
+                headerDone = true;
+                break;
+            }
+        }
+    }
+
+    if (!headerDone) throw new Exception("Incomplete response or connection closed");
+
+    String headerStr = buffer.toString(StandardCharsets.US_ASCII);
+    String[] lines = headerStr.split("\r\n");
+    
+    // Status
+    int statusCode = 0;
+    if (lines.length > 0) {
+        String[] parts = lines[0].split(" ");
+        if (parts.length > 1) {
+            try { statusCode = Integer.parseInt(parts[1]); } catch (Exception ignored) {}
+        }
+    }
+
+    // Headers
+    Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    int contentLength = -1;
+    boolean chunked = false;
+
+    for (int j = 1; j < lines.length; j++) {
+        String line = lines[j];
+        if (line.isEmpty()) break;
+        int idx = line.indexOf(':');
+        if (idx > 0) {
+            String key = line.substring(0, idx).trim();
+            String val = line.substring(idx + 1).trim();
+            headers.put(key, val);
+            if (key.equalsIgnoreCase("Content-Length")) {
+                try { contentLength = Integer.parseInt(val); } catch (Exception ignored) {}
+            }
+            if (key.equalsIgnoreCase("Transfer-Encoding") && val.equalsIgnoreCase("chunked")) {
+                chunked = true;
+            }
+        }
+    }
+
+    // Body
+    ByteArrayOutputStream bodyBuffer = new ByteArrayOutputStream();
+    if (chunked) {
+        readChunkedBody(in, bodyBuffer);
+    } else if (contentLength >= 0) {
+        byte[] temp = new byte[4096];
+        int remaining = contentLength;
+        while (remaining > 0) {
+            int read = in.read(temp, 0, Math.min(temp.length, remaining));
+            if (read == -1) break;
+            bodyBuffer.write(temp, 0, read);
+            remaining -= read;
+        }
+    } else {
+        // Read until EOF
+        byte[] temp = new byte[4096];
+        int read;
+        while ((read = in.read(temp)) != -1) {
+            bodyBuffer.write(temp, 0, read);
+        }
+    }
+
+    return new ProxyResponse(statusCode, headers, bodyBuffer.toByteArray());
+  }
+
+  private void readChunkedBody(InputStream in, ByteArrayOutputStream out) throws Exception {
+    while (true) {
+        StringBuilder sizeLine = new StringBuilder();
+        int c;
+        while ((c = in.read()) != -1) {
+            if (c == '\n') break;
+            if (c != '\r') sizeLine.append((char)c);
+        }
+        if (sizeLine.length() == 0) continue; 
+
+        int size = Integer.parseInt(sizeLine.toString().trim(), 16);
+        if (size == 0) break;
+
+        byte[] temp = new byte[size];
+        int totalRead = 0;
+        while (totalRead < size) {
+            int read = in.read(temp, totalRead, size - totalRead);
+            if (read == -1) throw new Exception("Unexpected EOF in chunked body");
+            totalRead += read;
+        }
+        out.write(temp);
+        
+        in.read(); // \r
+        in.read(); // \n
+    }
   }
 
   // --------------------------
@@ -119,7 +354,7 @@ public final class ThordataClient {
         .GET()
         .build();
         
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -138,12 +373,14 @@ public final class ThordataClient {
   // --------------------------
 
   public SerpResponse serpSearch(SerpOptions opt) throws Exception {
+    if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
+        throw new IllegalArgumentException("scraperToken is required for SERP API");
+    }    
     if (opt == null || opt.query == null || opt.query.isBlank()) {
       throw new IllegalArgumentException("query is required");
     }
 
     String engine = (opt.engine == null || opt.engine.isBlank()) ? "google" : normalizeEngine(opt.engine);
-    // Note: We force json=1 to ensure we can parse into SerpResponse
     
     Map<String, String> payload = new HashMap<>();
     payload.put("engine", engine);
@@ -180,17 +417,12 @@ public final class ThordataClient {
         .POST(HttpRequest.BodyPublishers.ofString(body))
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
 
-    // Deserialize into SerpResponse
     try {
         SerpResponse response = om.readValue(res.body(), SerpResponse.class);
         
-        // Check for API-level errors
         if (response.code != 0 && response.code != 200) {
-            // Re-wrap error into exception for consistency, using payload from object
-            // For simplicity, we create a map to pass to raiseForCode or throw directly
-            // Since raiseForCode takes Map, we might need to convert back, but simpler is:
             throw new ThordataErrors.ThordataApiException(
                 "SERP API Error: " + (response.status != null ? response.status : "Unknown"), 
                 response.code, res.statusCode(), response
@@ -198,7 +430,6 @@ public final class ThordataClient {
         }
         return response;
     } catch (Exception e) {
-        // Fallback for parsing errors (e.g. 500 HTML response)
         if (res.statusCode() >= 400) {
              throw new ThordataErrors.ThordataApiException("Request failed: " + res.body(), 0, res.statusCode(), res.body());
         }
@@ -211,6 +442,9 @@ public final class ThordataClient {
   // --------------------------
 
   public Object universalScrape(UniversalOptions opt) throws Exception {
+    if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
+        throw new IllegalArgumentException("scraperToken is required for Universal API");
+    }
     if (opt == null || opt.url == null || opt.url.isBlank()) {
       throw new IllegalArgumentException("url is required");
     }
@@ -249,7 +483,7 @@ public final class ThordataClient {
         .build();
 
     if (format.equals("png")) {
-      HttpResponse<byte[]> res = http.send(req, HttpResponse.BodyHandlers.ofByteArray());
+      HttpResponse<byte[]> res = apiClient.send(req, HttpResponse.BodyHandlers.ofByteArray());
       byte[] raw = res.body();
 
       Object parsed = safeParseJsonBytes(raw);
@@ -266,7 +500,7 @@ public final class ThordataClient {
       return raw;
     }
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
 
     if (parsed instanceof Map<?, ?> m && m.containsKey("code")) {
@@ -286,6 +520,9 @@ public final class ThordataClient {
   // --------------------------
 
   public String createScraperTask(ScraperTaskOptions opt) throws Exception {
+    if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
+        throw new IllegalArgumentException("scraperToken is required for Task Builder");
+    }
     if (opt == null || opt.fileName == null || opt.spiderId == null || opt.spiderName == null) {
       throw new IllegalArgumentException("fileName, spiderId, spiderName are required");
     }
@@ -316,7 +553,7 @@ public final class ThordataClient {
 
     HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload))).build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
 
     if (!(parsed instanceof Map<?, ?> m)) {
@@ -350,7 +587,7 @@ public final class ThordataClient {
         .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
 
     if (parsed instanceof Map<?, ?> m) {
@@ -390,7 +627,7 @@ public final class ThordataClient {
         .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
 
     if (parsed instanceof Map<?, ?> m) {
@@ -406,6 +643,9 @@ public final class ThordataClient {
   }
 
   public String createVideoTask(VideoTaskOptions opt) throws Exception {
+    if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
+        throw new IllegalArgumentException("scraperToken is required for Video Task Builder");
+    }
     if (opt == null || opt.fileName == null || opt.spiderId == null || opt.spiderName == null) {
       throw new IllegalArgumentException("fileName, spiderId, spiderName are required");
     }
@@ -436,7 +676,7 @@ public final class ThordataClient {
 
     HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload))).build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
 
     if (!(parsed instanceof Map<?, ?> m)) {
@@ -470,7 +710,7 @@ public final class ThordataClient {
         .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     
     if (parsed instanceof Map<?, ?> m) {
@@ -495,7 +735,7 @@ public final class ThordataClient {
         .GET()
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -526,7 +766,7 @@ public final class ThordataClient {
         .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -555,7 +795,7 @@ public final class ThordataClient {
         .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -577,7 +817,7 @@ public final class ThordataClient {
         .GET()
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -601,7 +841,7 @@ public final class ThordataClient {
         .GET()
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
     if (parsed instanceof Map<?, ?> m) {
         Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
@@ -663,7 +903,7 @@ public final class ThordataClient {
         .GET()
         .build();
 
-    HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
     Object parsed = safeParseJson(res.body());
 
     if (parsed instanceof Map<?, ?> m) {
@@ -758,9 +998,5 @@ public final class ThordataClient {
     if (mod == 2) v = v + "==";
     if (mod == 3) v = v + "=";
     return Base64.getDecoder().decode(v);
-  }
-
-  public ProxyResponse proxyGet(String url, ProxyConfig proxy) throws Exception {
-    return ProxyNetwork.proxyGet(url, proxy, cfg.userAgent, cfg.timeout);
   }
 }

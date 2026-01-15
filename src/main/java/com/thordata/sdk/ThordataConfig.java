@@ -77,7 +77,7 @@ public final class ThordataConfig {
     private String locationsBaseUrl;
 
     public Builder(String scraperToken) {
-      this.scraperToken = scraperToken;
+      this.scraperToken = scraperToken; // Allow null here
     }
 
     public Builder publicToken(String t) { this.publicToken = t; return this; }

@@ -41,19 +41,28 @@ public final class ProxyConfig {
     return sb.toString();
   }
 
-  public String effectiveProtocol() {
-    String p = (protocol == null || protocol.isBlank()) ? System.getenv("THORDATA_PROXY_PROTOCOL") : protocol;
+public String effectiveProtocol() {
+    // 1. Manual override
+    if (this.protocol != null && !this.protocol.isBlank()) return this.protocol.trim().toLowerCase(Locale.ROOT);
+    
+    // 2. Global Env
+    String p = System.getenv("THORDATA_PROXY_PROTOCOL");
     return (p == null || p.isBlank()) ? "https" : p.trim().toLowerCase(Locale.ROOT);
   }
 
   public String effectiveHost() {
+    // 1. Manual override
+    if (this.host != null && !this.host.isBlank()) return this.host.trim();
+
+    // 2. Product Env
     String per = System.getenv("THORDATA_" + product.name() + "_PROXY_HOST");
     if (per != null && !per.isBlank()) return per.trim();
 
+    // 3. Global Env
     String global = System.getenv("THORDATA_PROXY_HOST");
     if (global != null && !global.isBlank()) return global.trim();
 
-    // fallback
+    // 4. Default Fallback
     return switch (product) {
       case RESIDENTIAL -> "t.pr.thordata.net";
       case DATACENTER -> "dc.pr.thordata.net";
@@ -63,16 +72,22 @@ public final class ProxyConfig {
   }
 
   public int effectivePort() {
+    // 1. Manual override
+    if (this.port != null && this.port > 0) return this.port;
+
+    // 2. Product Env
     String per = System.getenv("THORDATA_" + product.name() + "_PROXY_PORT");
+    if (per != null && !per.isBlank()) {
+        try { return Integer.parseInt(per.trim()); } catch (Exception ignored) {}
+    }
+
+    // 3. Global Env
     String global = System.getenv("THORDATA_PROXY_PORT");
-    String raw = (port != null && port > 0) ? String.valueOf(port) :
-        (per != null && !per.isBlank()) ? per :
-        (global != null && !global.isBlank()) ? global : "";
+    if (global != null && !global.isBlank()) {
+        try { return Integer.parseInt(global.trim()); } catch (Exception ignored) {}
+    }
 
-    try {
-      if (!raw.isBlank()) return Integer.parseInt(raw.trim());
-    } catch (Exception ignored) {}
-
+    // 4. Default Fallback
     return switch (product) {
       case RESIDENTIAL -> 9999;
       case DATACENTER -> 7777;
