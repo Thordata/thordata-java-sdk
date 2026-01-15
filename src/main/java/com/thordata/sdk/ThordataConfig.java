@@ -42,7 +42,7 @@ public final class ThordataConfig {
       this.publicToken = publicToken;
       this.publicKey = publicKey;
       this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
-      this.userAgent = (userAgent == null || userAgent.isBlank()) ? Utils.buildUserAgent("1.1.0") : userAgent;
+      this.userAgent = (userAgent == null || userAgent.isBlank()) ? Utils.buildUserAgent("1.2.0") : userAgent;
       this.scraperApiBaseUrl = scraperApiBaseUrl;
       this.universalApiBaseUrl = universalApiBaseUrl;
       this.webScraperApiBaseUrl = webScraperApiBaseUrl;
@@ -69,7 +69,7 @@ public final class ThordataConfig {
     private String publicToken;
     private String publicKey;
     private Duration timeout = Duration.ofSeconds(30);
-    private String userAgent = Utils.buildUserAgent("1.1.0");
+    private String userAgent = Utils.buildUserAgent("1.2.0");
     private String httpProxyUrl;
     private String scraperApiBaseUrl;
     private String universalApiBaseUrl;

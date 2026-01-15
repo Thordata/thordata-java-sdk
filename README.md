@@ -2,20 +2,34 @@
 
 <div align="center">
 
-**Official Java Client for Thordata APIs**
+<img src="https://img.shields.io/badge/Thordata-AI%20Infrastructure-blue?style=for-the-badge" alt="Thordata Logo">
 
-*Proxy Network • SERP API • Web Unlocker • Web Scraper API*
+**The Official Java Client for Thordata APIs**
 
-[![Maven Central](https://img.shields.io/maven-central/v/com.thordata/thordata-java-sdk.svg)](https://search.maven.org/artifact/com.thordata/thordata-java-sdk)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+*Native implementation for maximum compatibility and performance.*
+
+[![Maven Central](https://img.shields.io/maven-central/v/com.thordata/thordata-java-sdk.svg?style=flat-square)](https://search.maven.org/artifact/com.thordata/thordata-java-sdk)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 </div>
 
 ---
 
+## 📖 Introduction
+
+The Thordata Java SDK provides a robust integration with Thordata's infrastructure. It features a **custom socket-level implementation** for proxy tunneling, ensuring 100% compatibility with Thordata's secure gateway authentication (TLS-in-TLS) where standard libraries often fail.
+
+**Key Features:**
+*   **🛡️ Rock-Solid Proxying:** Custom socket implementation supports Preemptive Authentication and SSL Tunneling perfectly.
+*   **⚡ Connection Pooling:** Internal `HttpClient` cache for high-throughput scenarios.
+*   **☕ Pure Java:** Minimal dependencies, leveraging `java.net.http` (Java 11+).
+*   **🧩 Lazy Validation:** Flexible initialization for different use cases.
+
+---
+
 ## 📦 Installation
 
-Add to `pom.xml`:
+Add this to your `pom.xml`:
 
 ```xml
 <dependency>
@@ -25,129 +39,94 @@ Add to `pom.xml`:
 </dependency>
 ```
 
-## 🔐 Configuration
-
-Set environment variables or pass `ThordataConfig` object.
-
-```bash
-export THORDATA_SCRAPER_TOKEN="your_token"
-export THORDATA_PUBLIC_TOKEN="public_token"
-export THORDATA_PUBLIC_KEY="public_key"
-```
+---
 
 ## 🚀 Quick Start
+
+### 1. Initialization
 
 ```java
 import com.thordata.sdk.*;
 
-public class Main {
-    public static void main(String[] args) throws Exception {
-        // Load from env
-        ThordataConfig cfg = new ThordataConfig(
-            System.getenv("THORDATA_SCRAPER_TOKEN"), 
-            null, null
-        );
-        ThordataClient client = new ThordataClient(cfg);
-
-        // SERP Search
-        SerpOptions opt = new SerpOptions();
-        opt.query = "java sdk";
-        opt.engine = "google";
-        
-        Object result = client.serpSearch(opt);
-        System.out.println(result);
-    }
-}
+// Auto-loads tokens from environment variables
+ThordataConfig cfg = new ThordataConfig(
+    System.getenv("THORDATA_SCRAPER_TOKEN"), 
+    null, null
+);
+ThordataClient client = new ThordataClient(cfg);
 ```
 
-## 📚 Core Features
-
-### 🌐 Proxy Network
-
-Uses `OkHttp` for high-performance tunneling.
+### 2. Proxy Network (The Robust Way)
 
 ```java
-// Create Proxy Config
+// Create Proxy Config (Residential, US, Sticky)
 ProxyConfig proxy = ProxyConfig.residentialFromEnv()
     .country("us")
     .city("new_york")
     .sticky(10); // 10 min session
 
-// Make Request
+// This uses the custom socket implementation for max compatibility
 ProxyResponse resp = client.proxyGet("https://httpbin.org/ip", proxy);
-System.out.println(resp.bodyText());
+
+System.out.println("Status: " + resp.statusCode);
+System.out.println("Body: " + resp.bodyText());
 ```
 
-### 🔍 SERP API
+### 3. SERP Search
 
 ```java
 SerpOptions opt = new SerpOptions();
-opt.query = "AI trends";
-opt.engine = "google_news";
-opt.num = 20;
-opt.country = "us";
+opt.query = "Java threading";
+opt.engine = "google";
+opt.num = 10;
 
-Object result = client.serpSearch(opt);
+// Returns strongly-typed response object
+SerpResponse result = client.serpSearch(opt);
+
+System.out.println("Result count: " + result.organicResults.size());
 ```
 
-### 🔓 Universal Scraping API
+---
+
+## ⚙️ Advanced Usage
+
+### Universal Scrape (Web Unlocker)
 
 ```java
 UniversalOptions opt = new UniversalOptions();
-opt.url = "https://example.com/spa";
+opt.url = "https://example.com/protected";
 opt.jsRender = true;
-opt.waitFor = ".content";
-opt.outputFormat = "html";
+opt.waitFor = ".content-loaded";
 
 Object result = client.universalScrape(opt);
 ```
 
-### 🕷️ Web Scraper API (Tasks)
+### Web Scraper Tasks
 
 ```java
 // 1. Create Task
 ScraperTaskOptions taskOpt = new ScraperTaskOptions();
-taskOpt.fileName = "my_task";
+taskOpt.fileName = "job_01";
 taskOpt.spiderId = "universal";
 taskOpt.spiderName = "universal";
 taskOpt.parameters.put("url", "https://example.com");
 
 String taskId = client.createScraperTask(taskOpt);
 
-// 2. Check Status
-String status = client.getTaskStatus(taskId);
-
-// 3. Get Result
-if ("ready".equals(status)) {
-    String url = client.getTaskResult(taskId, "json");
-    System.out.println(url);
+// 2. Poll Status & Get Result
+while (true) {
+    String status = client.getTaskStatus(taskId);
+    if ("ready".equalsIgnoreCase(status)) {
+        String url = client.getTaskResult(taskId, "json");
+        System.out.println("Data URL: " + url);
+        break;
+    }
+    Thread.sleep(5000);
 }
 ```
 
-### 📹 Video/Audio Tasks
-
-```java
-VideoTaskOptions vidOpt = new VideoTaskOptions();
-vidOpt.fileName = "video";
-vidOpt.spiderId = "youtube_video_by-url";
-vidOpt.spiderName = "youtube.com";
-vidOpt.parameters.put("url", "https://...");
-vidOpt.commonSettings = new CommonSettings();
-vidOpt.commonSettings.resolution = "1080p";
-
-String vidId = client.createVideoTask(vidOpt);
-```
-
-### 📊 Account Management
-
-```java
-// Usage Stats
-Object stats = client.getUsageStatistics("2024-01-01", "2024-01-31");
-
-// Whitelist IP
-client.addWhitelistIp("1.2.3.4", 1);
-```
+---
 
 ## 📄 License
 
-MIT License
+MIT License.
