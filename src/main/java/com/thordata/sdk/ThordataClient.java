@@ -2,16 +2,10 @@ package com.thordata.sdk;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import javax.net.ssl.SSLSocket;
-import javax.net.ssl.SSLSocketFactory;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
-import java.net.Socket;
 import java.net.URI;
-import java.net.URL;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -21,7 +15,6 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 
 public final class ThordataClient {
   private final ThordataConfig cfg;
@@ -70,10 +63,9 @@ public final class ThordataClient {
     if (cfg == null) {
       throw new IllegalArgumentException("Config cannot be null");
     }
-    // [REMOVED]: Check for scraperToken removed from here
     this.cfg = cfg;
     
-    // Initialize API Client (for SERP/Universal/Tasks)
+    // Initialize API Client
     HttpClient.Builder b = HttpClient.newBuilder()
         .connectTimeout(cfg.timeout == null ? Duration.ofSeconds(30) : cfg.timeout)
         .followRedirects(HttpClient.Redirect.NORMAL);
@@ -114,233 +106,117 @@ public final class ThordataClient {
       return url.replaceAll("/+$", "");
   }
 
-  // --------------------------
-  // Proxy Network (Manual Socket Implementation with TLS-in-TLS)
-  // --------------------------
+  // ==========================================================
+  // Management APIs
+  // ==========================================================
 
-public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Exception {
-    if (proxy == null) {
-      proxy = ProxyConfig.residentialFromEnv();
-    }
+  public void updateProxyUser(String username, Integer trafficLimit, Boolean status, int proxyType) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("username", username);
+    payload.put("proxy_type", String.valueOf(proxyType));
+    if (trafficLimit != null) payload.put("traffic_limit", String.valueOf(trafficLimit));
+    if (status != null) payload.put("status", status ? "true" : "false");
 
-    URL url = URI.create(targetUrl).toURL();
-    String targetHost = url.getHost();
-    int targetPort = url.getPort() == -1 ? (url.getProtocol().equalsIgnoreCase("https") ? 443 : 80) : url.getPort();
-    boolean isTargetHttps = url.getProtocol().equalsIgnoreCase("https");
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyUsersUrl + "/update-user"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
 
-    String proxyHost = proxy.effectiveHost();
-    int proxyPort = proxy.effectivePort();
-    String proxyProto = proxy.effectiveProtocol();
-    String proxyUser = proxy.noAuth ? null : proxy.buildGatewayUsername();
-    String proxyPass = proxy.noAuth ? null : proxy.password;
-
-    // 1. Connect TCP to Proxy
-    Socket socket = new Socket();
-    socket.setSoTimeout((int) cfg.timeout.toMillis());
-    socket.connect(new InetSocketAddress(proxyHost, proxyPort), (int) cfg.timeout.toMillis());
-
-    try {
-        // 2. If Proxy Protocol is HTTPS, Handshake with Proxy FIRST (Outer TLS)
-        if ("https".equalsIgnoreCase(proxyProto)) {
-            SSLSocketFactory proxySslFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-            // autoClose=true is fine here as this becomes the base socket
-            SSLSocket proxySslSocket = (SSLSocket) proxySslFactory.createSocket(socket, proxyHost, proxyPort, true);
-            proxySslSocket.startHandshake();
-            socket = proxySslSocket;
-        }
-
-        // 3. Send HTTP CONNECT (Tunneling Request)
-        String connectRequest = "CONNECT " + targetHost + ":" + targetPort + " HTTP/1.1\r\n" +
-                                "Host: " + targetHost + ":" + targetPort + "\r\n" +
-                                "User-Agent: " + cfg.userAgent + "\r\n";
-        
-        if (proxyUser != null && !proxyUser.isEmpty()) {
-            String creds = proxyUser + ":" + proxyPass;
-            String encoded = Base64.getEncoder().encodeToString(creds.getBytes(StandardCharsets.UTF_8));
-            connectRequest += "Proxy-Authorization: Basic " + encoded + "\r\n";
-        }
-        connectRequest += "\r\n";
-
-        OutputStream out = socket.getOutputStream();
-        out.write(connectRequest.getBytes(StandardCharsets.UTF_8));
-        out.flush();
-
-        // 4. Read Proxy Response (Byte-by-byte to avoid buffering over-read)
-        InputStream in = socket.getInputStream();
-        ByteArrayOutputStream headerBuffer = new ByteArrayOutputStream();
-        int c;
-        // Looking for \r\n\r\n (13 10 13 10)
-        int[] tail = new int[4];
-        int count = 0;
-        
-        while ((c = in.read()) != -1) {
-            headerBuffer.write(c);
-            tail[count % 4] = c;
-            count++;
-            
-            if (count >= 4) {
-                if (tail[(count-4)%4] == 13 && tail[(count-3)%4] == 10 && 
-                    tail[(count-2)%4] == 13 && tail[(count-1)%4] == 10) {
-                    break; // Headers done
-                }
-            }
-        }
-
-        String responseHeader = headerBuffer.toString(StandardCharsets.US_ASCII);
-        if (!responseHeader.contains(" 200 ")) {
-            throw new Exception("Proxy handshake failed: " + responseHeader.split("\r\n")[0]);
-        }
-
-        // 5. Upgrade to Inner TLS if target is HTTPS (TLS-in-TLS)
-        if (isTargetHttps) {
-            SSLSocketFactory targetSslFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-            // Use createSocket(Socket s, String host, int port, boolean autoClose)
-            // autoClose=true means closing the new socket closes the underlying one, which is what we want.
-            SSLSocket targetSslSocket = (SSLSocket) targetSslFactory.createSocket(socket, targetHost, targetPort, true);
-            
-            targetSslSocket.setUseClientMode(true);
-            targetSslSocket.startHandshake();
-            
-            socket = targetSslSocket;
-            out = socket.getOutputStream();
-            in = socket.getInputStream();
-        }
-
-        // 6. Send Actual GET Request
-        String path = url.getPath().isEmpty() ? "/" : url.getPath();
-        if (url.getQuery() != null) path += "?" + url.getQuery();
-
-        String getRequest = "GET " + path + " HTTP/1.1\r\n" +
-                            "Host: " + targetHost + "\r\n" +
-                            "User-Agent: " + cfg.userAgent + "\r\n" +
-                            "Connection: close\r\n\r\n";
-        
-        out.write(getRequest.getBytes(StandardCharsets.UTF_8));
-        out.flush();
-
-        // 7. Parse Response
-        return parseResponse(in);
-
-    } finally {
-        try { socket.close(); } catch (Exception ignored) {}
-    }
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    checkApiResponse("Update proxy user failed", res);
   }
 
-  private ProxyResponse parseResponse(InputStream in) throws Exception {
-    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-    int c;
-    boolean headerDone = false;
-    
-    // Naive header parser: look for \r\n\r\n
-    // We read byte by byte to preserve the body stream start position
-    int[] ring = new int[4]; 
-    int i = 0;
-    
-    while ((c = in.read()) != -1) {
-        buffer.write(c);
-        ring[i % 4] = c;
-        i++;
-        if (i >= 4) {
-            // Check for \r\n\r\n (13 10 13 10)
-            if (ring[(i-4)%4] == 13 && ring[(i-3)%4] == 10 && 
-                ring[(i-2)%4] == 13 && ring[(i-1)%4] == 10) {
-                headerDone = true;
-                break;
-            }
-        }
-    }
+  public void deleteProxyUser(String username, int proxyType) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("username", username);
+    payload.put("proxy_type", String.valueOf(proxyType));
 
-    if (!headerDone) throw new Exception("Incomplete response or connection closed");
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyUsersUrl + "/delete-user"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
 
-    String headerStr = buffer.toString(StandardCharsets.US_ASCII);
-    String[] lines = headerStr.split("\r\n");
-    
-    // Status
-    int statusCode = 0;
-    if (lines.length > 0) {
-        String[] parts = lines[0].split(" ");
-        if (parts.length > 1) {
-            try { statusCode = Integer.parseInt(parts[1]); } catch (Exception ignored) {}
-        }
-    }
-
-    // Headers
-    Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-    int contentLength = -1;
-    boolean chunked = false;
-
-    for (int j = 1; j < lines.length; j++) {
-        String line = lines[j];
-        if (line.isEmpty()) break;
-        int idx = line.indexOf(':');
-        if (idx > 0) {
-            String key = line.substring(0, idx).trim();
-            String val = line.substring(idx + 1).trim();
-            headers.put(key, val);
-            if (key.equalsIgnoreCase("Content-Length")) {
-                try { contentLength = Integer.parseInt(val); } catch (Exception ignored) {}
-            }
-            if (key.equalsIgnoreCase("Transfer-Encoding") && val.equalsIgnoreCase("chunked")) {
-                chunked = true;
-            }
-        }
-    }
-
-    // Body
-    ByteArrayOutputStream bodyBuffer = new ByteArrayOutputStream();
-    if (chunked) {
-        readChunkedBody(in, bodyBuffer);
-    } else if (contentLength >= 0) {
-        byte[] temp = new byte[4096];
-        int remaining = contentLength;
-        while (remaining > 0) {
-            int read = in.read(temp, 0, Math.min(temp.length, remaining));
-            if (read == -1) break;
-            bodyBuffer.write(temp, 0, read);
-            remaining -= read;
-        }
-    } else {
-        // Read until EOF
-        byte[] temp = new byte[4096];
-        int read;
-        while ((read = in.read(temp)) != -1) {
-            bodyBuffer.write(temp, 0, read);
-        }
-    }
-
-    return new ProxyResponse(statusCode, headers, bodyBuffer.toByteArray());
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    checkApiResponse("Delete proxy user failed", res);
   }
 
-  private void readChunkedBody(InputStream in, ByteArrayOutputStream out) throws Exception {
-    while (true) {
-        StringBuilder sizeLine = new StringBuilder();
-        int c;
-        while ((c = in.read()) != -1) {
-            if (c == '\n') break;
-            if (c != '\r') sizeLine.append((char)c);
-        }
-        if (sizeLine.length() == 0) continue; 
+  public void deleteWhitelistIp(String ip, int proxyType) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("ip", ip);
+    payload.put("proxy_type", String.valueOf(proxyType));
 
-        int size = Integer.parseInt(sizeLine.toString().trim(), 16);
-        if (size == 0) break;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(whitelistUrl + "/delete-ip"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
 
-        byte[] temp = new byte[size];
-        int totalRead = 0;
-        while (totalRead < size) {
-            int read = in.read(temp, totalRead, size - totalRead);
-            if (read == -1) throw new Exception("Unexpected EOF in chunked body");
-            totalRead += read;
-        }
-        out.write(temp);
-        
-        in.read(); // \r
-        in.read(); // \n
-    }
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    checkApiResponse("Delete whitelist IP failed", res);
   }
 
-  // --------------------------
-  // Public API Methods
-  // --------------------------
+  @SuppressWarnings("unchecked")
+  public List<String> listWhitelistIps(int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + URLEncoder.encode(cfg.publicToken, StandardCharsets.UTF_8) + 
+                "&key=" + URLEncoder.encode(cfg.publicKey, StandardCharsets.UTF_8) + 
+                "&proxy_type=" + proxyType;
+                
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(whitelistUrl + "/ip-list?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("List whitelist IPs failed", m, res.statusCode());
+        }
+        Object data = m.get("data");
+        if (data instanceof List<?>) {
+            return (List<String>) data;
+        }
+    }
+    return List.of();
+  }
+
+  private void checkApiResponse(String errorMsg, HttpResponse<String> res) {
+      Object parsed = safeParseJson(res.body());
+      if (parsed instanceof Map<?, ?> m) {
+          Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+          if (apiCode != null && apiCode != 200) {
+              throw raiseForCode(errorMsg, m, res.statusCode());
+          }
+      } else if (res.statusCode() >= 400) {
+          throw new ThordataErrors.ThordataApiException(errorMsg, 0, res.statusCode(), res.body());
+      }
+  }
+
+  // ==========================================================
+  // Public API Methods (Existing)
+  // ==========================================================
 
   public Object getUsageStatistics(String fromDate, String toDate) throws Exception {
     requirePublicCreds();
@@ -368,9 +244,137 @@ public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Except
     return parsed;
   }
 
-  // --------------------------
-  // 1) SERP API (Strongly Typed)
-  // --------------------------
+  public Object listProxyUsers(int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + "&proxy_type=" + proxyType;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyUsersUrl + "/user-list?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("List proxy users failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+    }
+    return parsed;
+  }
+
+  public Object createProxyUser(String username, String password, int trafficLimit, boolean status, int proxyType) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("username", username);
+    payload.put("password", password);
+    payload.put("traffic_limit", String.valueOf(trafficLimit));
+    payload.put("status", status ? "true" : "false");
+    payload.put("proxy_type", String.valueOf(proxyType));
+
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyUsersUrl + "/create-user"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
+
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Create proxy user failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+    }
+    return parsed;
+  }
+
+  public Object addWhitelistIp(String ip, int proxyType, boolean status) throws Exception {
+    requirePublicCreds();
+    Map<String, String> payload = new HashMap<>();
+    payload.put("ip", ip);
+    payload.put("proxy_type", String.valueOf(proxyType));
+    payload.put("status", status ? "true" : "false");
+
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(whitelistUrl + "/add-ip"))
+        .timeout(cfg.timeout)
+        .header("token", cfg.publicToken)
+        .header("key", cfg.publicKey)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", cfg.userAgent)
+        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
+        .build();
+
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Add whitelist IP failed", m, res.statusCode());
+        }
+        return m.get("data");
+    }
+    return parsed;
+  }
+
+  public Object listProxyServers(int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + "&proxy_type=" + proxyType;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyListUrl + "?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("List proxy servers failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+        if (m.containsKey("list")) return m.get("list");
+    }
+    return parsed;
+  }
+
+  public Object getProxyExpiration(String ips, int proxyType) throws Exception {
+    requirePublicCreds();
+    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + 
+                "&proxy_type=" + proxyType + "&ips=" + ips;
+    HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(proxyExpirationUrl + "?" + qs))
+        .timeout(cfg.timeout)
+        .header("User-Agent", cfg.userAgent)
+        .GET()
+        .build();
+
+    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
+    Object parsed = safeParseJson(res.body());
+    if (parsed instanceof Map<?, ?> m) {
+        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
+        if (apiCode != null && apiCode != 200) {
+            throw raiseForCode("Get proxy expiration failed", m, res.statusCode());
+        }
+        if (m.containsKey("data")) return m.get("data");
+    }
+    return parsed;
+  }
+
+  // ==========================================================
+  // SERP API
+  // ==========================================================
 
   public SerpResponse serpSearch(SerpOptions opt) throws Exception {
     if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
@@ -437,9 +441,9 @@ public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Except
     }
   }
 
-  // --------------------------
-  // 2) Universal API
-  // --------------------------
+  // ==========================================================
+  // Universal API
+  // ==========================================================
 
   public Object universalScrape(UniversalOptions opt) throws Exception {
     if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
@@ -515,9 +519,9 @@ public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Except
     return parsed;
   }
 
-  // --------------------------
-  // 3) Web Scraper API (Tasks)
-  // --------------------------
+  // ==========================================================
+  // Web Scraper API
+  // ==========================================================
 
   public String createScraperTask(ScraperTaskOptions opt) throws Exception {
     if (cfg.scraperToken == null || cfg.scraperToken.isBlank()) {
@@ -725,137 +729,9 @@ public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Except
     return new HashMap<>();
   }
 
-  public Object listProxyUsers(int proxyType) throws Exception {
-    requirePublicCreds();
-    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + "&proxy_type=" + proxyType;
-    HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(proxyUsersUrl + "/user-list?" + qs))
-        .timeout(cfg.timeout)
-        .header("User-Agent", cfg.userAgent)
-        .GET()
-        .build();
-
-    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
-    Object parsed = safeParseJson(res.body());
-    if (parsed instanceof Map<?, ?> m) {
-        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
-        if (apiCode != null && apiCode != 200) {
-            throw raiseForCode("List proxy users failed", m, res.statusCode());
-        }
-        if (m.containsKey("data")) return m.get("data");
-    }
-    return parsed;
-  }
-
-  public Object createProxyUser(String username, String password, int trafficLimit, boolean status, int proxyType) throws Exception {
-    requirePublicCreds();
-    Map<String, String> payload = new HashMap<>();
-    payload.put("username", username);
-    payload.put("password", password);
-    payload.put("traffic_limit", String.valueOf(trafficLimit));
-    payload.put("status", status ? "true" : "false");
-    payload.put("proxy_type", String.valueOf(proxyType));
-
-    HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(proxyUsersUrl + "/create-user"))
-        .timeout(cfg.timeout)
-        .header("token", cfg.publicToken)
-        .header("key", cfg.publicKey)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", cfg.userAgent)
-        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
-        .build();
-
-    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
-    Object parsed = safeParseJson(res.body());
-    if (parsed instanceof Map<?, ?> m) {
-        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
-        if (apiCode != null && apiCode != 200) {
-            throw raiseForCode("Create proxy user failed", m, res.statusCode());
-        }
-        if (m.containsKey("data")) return m.get("data");
-    }
-    return parsed;
-  }
-
-  public Object addWhitelistIp(String ip, int proxyType, boolean status) throws Exception {
-    requirePublicCreds();
-    Map<String, String> payload = new HashMap<>();
-    payload.put("ip", ip);
-    payload.put("proxy_type", String.valueOf(proxyType));
-    payload.put("status", status ? "true" : "false");
-
-    HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(whitelistUrl + "/add-ip"))
-        .timeout(cfg.timeout)
-        .header("token", cfg.publicToken)
-        .header("key", cfg.publicKey)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", cfg.userAgent)
-        .POST(HttpRequest.BodyPublishers.ofString(Utils.formEncode(payload)))
-        .build();
-
-    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
-    Object parsed = safeParseJson(res.body());
-    if (parsed instanceof Map<?, ?> m) {
-        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
-        if (apiCode != null && apiCode != 200) {
-            throw raiseForCode("Add whitelist IP failed", m, res.statusCode());
-        }
-        return m.get("data");
-    }
-    return parsed;
-  }
-
-  public Object listProxyServers(int proxyType) throws Exception {
-    requirePublicCreds();
-    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + "&proxy_type=" + proxyType;
-    HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(proxyListUrl + "?" + qs))
-        .timeout(cfg.timeout)
-        .header("User-Agent", cfg.userAgent)
-        .GET()
-        .build();
-
-    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
-    Object parsed = safeParseJson(res.body());
-    if (parsed instanceof Map<?, ?> m) {
-        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
-        if (apiCode != null && apiCode != 200) {
-            throw raiseForCode("List proxy servers failed", m, res.statusCode());
-        }
-        if (m.containsKey("data")) return m.get("data");
-        if (m.containsKey("list")) return m.get("list");
-    }
-    return parsed;
-  }
-
-  public Object getProxyExpiration(String ips, int proxyType) throws Exception {
-    requirePublicCreds();
-    String qs = "token=" + cfg.publicToken + "&key=" + cfg.publicKey + 
-                "&proxy_type=" + proxyType + "&ips=" + ips;
-    HttpRequest req = HttpRequest.newBuilder()
-        .uri(URI.create(proxyExpirationUrl + "?" + qs))
-        .timeout(cfg.timeout)
-        .header("User-Agent", cfg.userAgent)
-        .GET()
-        .build();
-
-    HttpResponse<String> res = apiClient.send(req, HttpResponse.BodyHandlers.ofString());
-    Object parsed = safeParseJson(res.body());
-    if (parsed instanceof Map<?, ?> m) {
-        Integer apiCode = m.containsKey("code") ? toInt(m.get("code")) : null;
-        if (apiCode != null && apiCode != 200) {
-            throw raiseForCode("Get proxy expiration failed", m, res.statusCode());
-        }
-        if (m.containsKey("data")) return m.get("data");
-    }
-    return parsed;
-  }
-
-  // --------------------------
-  // 4) Locations API
-  // --------------------------
+  // ==========================================================
+  // Locations API
+  // ==========================================================
 
   public Object listCountries(int proxyType) throws Exception {
     return getLocations("countries", Map.of("proxy_type", String.valueOf(proxyType)));
@@ -918,15 +794,47 @@ public ProxyResponse proxyGet(String targetUrl, ProxyConfig proxy) throws Except
     return parsed;
   }
 
+  public String runTask(ScraperTaskOptions taskOpt, RunTaskConfig runConfig) throws Exception {
+      if (runConfig == null) runConfig = new RunTaskConfig();
+      
+      // 1. Create Task
+      String taskId = createScraperTask(taskOpt);
+      
+      // 2. Poll Status
+      long startTime = System.currentTimeMillis();
+      long maxWaitMs = runConfig.maxWait.toMillis();
+      long currentPollMs = runConfig.initialPollInterval.toMillis();
+      long maxPollMs = runConfig.maxPollInterval.toMillis();
+      
+      while (System.currentTimeMillis() - startTime < maxWaitMs) {
+          String status = getTaskStatus(taskId);
+          String lower = status.toLowerCase();
+          
+          if (lower.equals("ready") || lower.equals("success") || lower.equals("finished")) {
+              return getTaskResult(taskId, "json");
+          }
+          
+          if (lower.equals("failed") || lower.equals("error") || lower.equals("cancelled")) {
+              throw new ThordataErrors.ThordataApiException("Task failed with status: " + status, null, 200, null);
+          }
+          
+          try { Thread.sleep(currentPollMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw e; }
+          
+          currentPollMs = Math.min((long)(currentPollMs * 1.5), maxPollMs);
+      }
+      
+      throw new java.util.concurrent.TimeoutException("Task " + taskId + " timed out after " + runConfig.maxWait);
+  }
+
+  // ==========================================================
+  // Helpers
+  // ==========================================================
+
   private void requirePublicCreds() {
     if (cfg.publicToken == null || cfg.publicToken.isBlank() || cfg.publicKey == null || cfg.publicKey.isBlank()) {
       throw new IllegalArgumentException("publicToken and publicKey are required for this operation");
     }
   }
-
-  // --------------------------
-  // Helpers
-  // --------------------------
 
   private Object safeParseJson(String data) {
     try {
