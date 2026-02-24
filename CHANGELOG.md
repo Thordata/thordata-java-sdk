@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-02-24
+
+### Added
+- Clear Java SDK positioning in README as an enterprise integration & task orchestration client.
+- Live, minimal acceptance examples for SERP, Universal, Locations, Web Scraper tasks, and management APIs.
+
+### Fixed
+- Normalized base URLs to safely handle missing schemes (defaulting to `https://`) for all core endpoints.
+- Simplified GitHub Actions workflows after git submodules removal.
+
 ## [1.1.0] - 2026-01-06
 
 ### Added

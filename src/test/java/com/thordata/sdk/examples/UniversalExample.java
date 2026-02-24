@@ -4,7 +4,6 @@ import com.thordata.sdk.ThordataClient;
 import com.thordata.sdk.ThordataConfig;
 import com.thordata.sdk.UniversalOptions;
 
-
 import java.time.Duration;
 
 public final class UniversalExample {
@@ -18,15 +17,14 @@ public final class UniversalExample {
     String proxy = Env.get("HTTPS_PROXY");
     if (proxy == null || proxy.isBlank()) proxy = Env.get("HTTP_PROXY");
 
-    ThordataClient client = new ThordataClient(new ThordataConfig(
-        token,
-        Env.get("THORDATA_PUBLIC_TOKEN"),
-        Env.get("THORDATA_PUBLIC_KEY"),
-        Duration.ofSeconds(60),
-        null,
-        null, null, null, null,
-        proxy
-    ));
+    ThordataConfig config = ThordataConfig.builder(token)
+        .publicToken(Env.get("THORDATA_PUBLIC_TOKEN"))
+        .publicKey(Env.get("THORDATA_PUBLIC_KEY"))
+        .timeout(Duration.ofSeconds(60))
+        .httpProxy(proxy)
+        .build();
+
+    ThordataClient client = new ThordataClient(config);
 
     UniversalOptions opt = new UniversalOptions();
     opt.url = "https://httpbin.org/html";

@@ -102,8 +102,15 @@ public final class ThordataClient {
   }
 
   private String normalizeUrl(String url) {
-      if (url == null) return "";
-      return url.replaceAll("/+$", "");
+      if (url == null || url.isBlank()) {
+          return "";
+      }
+      String trimmed = url.replaceAll("/+$", "");
+      // If no explicit scheme is present, assume https:// for safety
+      if (!trimmed.contains("://")) {
+          trimmed = "https://" + trimmed;
+      }
+      return trimmed;
   }
 
   // ==========================================================

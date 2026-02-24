@@ -20,13 +20,14 @@ public final class LocationsExample {
     String proxy = Env.get("HTTPS_PROXY");
     if (proxy == null || proxy.isBlank()) proxy = Env.get("HTTP_PROXY");
 
-    ThordataClient client = new ThordataClient(new ThordataConfig(
-        token, pub, key,
-        Duration.ofSeconds(60),
-        null,
-        null, null, null, null,
-        proxy
-    ));
+    ThordataConfig config = ThordataConfig.builder(token)
+        .publicToken(pub)
+        .publicKey(key)
+        .timeout(Duration.ofSeconds(60))
+        .httpProxy(proxy)
+        .build();
+
+    ThordataClient client = new ThordataClient(config);
 
     Object out = client.listCountries(1);
     System.out.println(new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(out));

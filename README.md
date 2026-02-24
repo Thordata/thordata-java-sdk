@@ -6,7 +6,7 @@
 
 **The Official Java Client for Thordata APIs**
 
-*Native implementation for maximum compatibility and performance.*
+*Enterprise integration & task orchestration for Thordata infrastructure.*
 
 [![Maven Central](https://img.shields.io/maven-central/v/com.thordata/thordata-java-sdk.svg?style=flat-square)](https://search.maven.org/artifact/com.thordata/thordata-java-sdk)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -17,113 +17,138 @@
 
 ## 📖 Introduction
 
-The Thordata Java SDK provides a robust integration with Thordata's infrastructure. It features a **custom socket-level implementation** for proxy tunneling, ensuring 100% compatibility with Thordata's secure gateway authentication (TLS-in-TLS) where standard libraries often fail.
+The Thordata Java SDK is the **official client for enterprise backends, control panels, and task orchestration services** built on top of Thordata.
+It focuses on:
 
-**Key Features:**
-*   **🛡️ Rock-Solid Proxying:** Custom socket implementation supports Preemptive Authentication and SSL Tunneling perfectly.
-*   **⚡ Connection Pooling:** Internal `HttpClient` cache for high-throughput scenarios.
-*   **☕ Pure Java:** Minimal dependencies, leveraging `java.net.http` (Java 11+).
-*   **🧩 Lazy Validation:** Flexible initialization for different use cases.
+- **Management APIs**: usage statistics, proxy users, whitelist IPs, proxy server lists, expiration time, and geo-locations.
+- **Web Scraper Tasks lifecycle**: create tasks, poll status, download results, and a high-level `runTask` helper.
+- **Core scraping APIs (P1)**: SERP and Universal/Web Unlocker for simple data collection flows.
+
+Behavior (endpoints, parameters, error model) follows the Python SDK and the shared `thordata-sdk-spec` repository.
 
 ---
 
 ## 📦 Installation
 
-Add this to your `pom.xml`:
+Add this dependency to your `pom.xml`:
 
 ```xml
 <dependency>
   <groupId>com.thordata</groupId>
   <artifactId>thordata-java-sdk</artifactId>
-  <version>1.2.0</version>
+  <version>1.2.1</version>
 </dependency>
 ```
+
+Requires **Java 11+** (tested on Java 17 in CI).
+
+---
+
+## 🔐 Configuration
+
+1. Copy the example env file and fill in your real credentials:
+
+```bash
+cp .env.example .env
+```
+
+2. At minimum, set:
+
+- `THORDATA_SCRAPER_TOKEN` – Scraper APIs (SERP, Universal, Tasks builder)
+- `THORDATA_PUBLIC_TOKEN` / `THORDATA_PUBLIC_KEY` – Management & locations APIs
+
+3. Optionally configure proxy endpoints and upstream proxy (see `.env.example` for a full reference).
+
+The Java examples use a small helper `Env` class to load `.env` and fall back to real environment variables. In your own project you can either:
+
+- read env vars directly (e.g. `System.getenv("THORDATA_SCRAPER_TOKEN")`), or
+- port a similar `.env` loader if you prefer local files during development.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Initialization
+### 1. Initialize client from env
 
 ```java
-import com.thordata.sdk.*;
+import com.thordata.sdk.ThordataClient;
+import com.thordata.sdk.ThordataConfig;
 
-// Auto-loads tokens from environment variables
-ThordataConfig cfg = new ThordataConfig(
-    System.getenv("THORDATA_SCRAPER_TOKEN"), 
-    null, null
-);
-ThordataClient client = new ThordataClient(cfg);
+ThordataConfig config = ThordataConfig.builder(System.getenv("THORDATA_SCRAPER_TOKEN"))
+    .publicToken(System.getenv("THORDATA_PUBLIC_TOKEN"))
+    .publicKey(System.getenv("THORDATA_PUBLIC_KEY"))
+    .build();
+
+ThordataClient client = new ThordataClient(config);
 ```
 
-### 2. Proxy Network (The Robust Way)
+### 2. SERP search (Google)
 
 ```java
-// Create Proxy Config (Residential, US, Sticky)
-ProxyConfig proxy = ProxyConfig.residentialFromEnv()
-    .country("us")
-    .city("new_york")
-    .sticky(10); // 10 min session
+import com.thordata.sdk.SerpOptions;
+import com.thordata.sdk.SerpResponse;
 
-// This uses the custom socket implementation for max compatibility
-ProxyResponse resp = client.proxyGet("https://httpbin.org/ip", proxy);
-
-System.out.println("Status: " + resp.statusCode);
-System.out.println("Body: " + resp.bodyText());
-```
-
-### 3. SERP Search
-
-```java
 SerpOptions opt = new SerpOptions();
-opt.query = "Java threading";
+opt.query = "pizza";
 opt.engine = "google";
+opt.country = "us";
 opt.num = 10;
 
-// Returns strongly-typed response object
 SerpResponse result = client.serpSearch(opt);
-
-System.out.println("Result count: " + result.organicResults.size());
+System.out.println("Organic results: " + result.organicResults.size());
 ```
+
+### 3. Universal scrape (Web Unlocker)
+
+```java
+import com.thordata.sdk.UniversalOptions;
+
+UniversalOptions opt = new UniversalOptions();
+opt.url = "https://httpbin.org/html";
+opt.jsRender = false;
+opt.outputFormat = "html";
+
+Object out = client.universalScrape(opt);
+System.out.println(String.valueOf(out));
+```
+
+### 4. Web Scraper task lifecycle helper
+
+```java
+import com.thordata.sdk.RunTaskConfig;
+import com.thordata.sdk.ScraperTaskOptions;
+
+ScraperTaskOptions task = new ScraperTaskOptions();
+task.fileName = "java_example";
+task.spiderId = "youtube_video-post_by-url";
+task.spiderName = "youtube.com";
+task.parameters.put("url", "https://www.youtube.com/@stephcurry/videos");
+
+RunTaskConfig runCfg = new RunTaskConfig(); // defaults: maxWait=10m, polling backoff
+String downloadUrl = client.runTask(task, runCfg);
+System.out.println("Download URL: " + downloadUrl);
+```
+
+See `src/test/java/com/thordata/sdk/examples/` for more complete, runnable examples:
+
+- `SerpExample` – SERP quick start
+- `UniversalExample` – Universal/Web Unlocker
+- `LocationsExample` – locations & geo metadata
+- `VerifyRunTask` – end-to-end task creation + wait + result
+- `VerifyExample` – management APIs (whitelist IPs, video tasks)
 
 ---
 
-## ⚙️ Advanced Usage
+## 🧪 Testing
 
-### Universal Scrape (Web Unlocker)
+- **Unit tests (offline)**: run `mvn test` – uses local HTTP servers, no live traffic.
+- **Integration checks (live)**: from the repo root, with `.env` filled in:
+  - `mvn -Dexec.mainClass="com.thordata.sdk.examples.SerpExample" -Dexec.classpathScope=test exec:java`
+  - `mvn -Dexec.mainClass="com.thordata.sdk.examples.UniversalExample" -Dexec.classpathScope=test exec:java`
+  - `mvn -Dexec.mainClass="com.thordata.sdk.examples.LocationsExample" -Dexec.classpathScope=test exec:java`
+  - `mvn -Dexec.mainClass="com.thordata.sdk.examples.VerifyRunTask" -Dexec.classpathScope=test exec:java`
 
-```java
-UniversalOptions opt = new UniversalOptions();
-opt.url = "https://example.com/protected";
-opt.jsRender = true;
-opt.waitFor = ".content-loaded";
-
-Object result = client.universalScrape(opt);
-```
-
-### Web Scraper Tasks
-
-```java
-// 1. Create Task
-ScraperTaskOptions taskOpt = new ScraperTaskOptions();
-taskOpt.fileName = "job_01";
-taskOpt.spiderId = "universal";
-taskOpt.spiderName = "universal";
-taskOpt.parameters.put("url", "https://example.com");
-
-String taskId = client.createScraperTask(taskOpt);
-
-// 2. Poll Status & Get Result
-while (true) {
-    String status = client.getTaskStatus(taskId);
-    if ("ready".equalsIgnoreCase(status)) {
-        String url = client.getTaskResult(taskId, "json");
-        System.out.println("Data URL: " + url);
-        break;
-    }
-    Thread.sleep(5000);
-}
-```
+These examples are designed to be **short, self-contained acceptance tests** for the Java SDK.
 
 ---
 
