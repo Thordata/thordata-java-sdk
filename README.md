@@ -30,15 +30,18 @@ Behavior (endpoints, parameters, error model) follows the Python SDK and the sha
 
 ## 📦 Installation
 
-Add this dependency to your `pom.xml`:
+The package is currently under development and is not yet published to Maven Central.
 
-```xml
-<dependency>
-  <groupId>com.thordata</groupId>
-  <artifactId>thordata-java-sdk</artifactId>
-  <version>1.2.1</version>
-</dependency>
+For local development:
+
+```bash
+git clone https://github.com/Thordata/thordata-java-sdk.git
+cd thordata-java-sdk
+mvn test
+mvn package
 ```
+
+Do not add `com.thordata:thordata-java-sdk` to your `pom.xml` until the package is officially published to Maven Central.
 
 Requires **Java 11+** (tested on Java 17 in CI).
 
